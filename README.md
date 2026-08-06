@@ -41,4 +41,4 @@ TLS, reverse proxy e múltiplas réplicas não fazem parte deste script — isso
 
 ## Licença
 
-MIT.
+Apache-2.0.
