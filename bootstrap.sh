@@ -11,6 +11,10 @@
 # `curl -fsSL <url> | bash` também funciona — cada prompt abaixo lê de
 # /dev/tty explicitamente pra esse caso, já que o stdin do script seria o
 # próprio pipe do curl.
+#
+# Cores/spinner são desligados automaticamente se a saída não for um
+# terminal (ex.: redirecionada pra arquivo/CI) ou se NO_COLOR estiver
+# definido — nesse caso o script cai pra texto liso, sem animação.
 set -euo pipefail
 
 IMAGE_REPO='public.ecr.aws/x8o6o1x8/pabip-gateway'
@@ -20,21 +24,83 @@ POSTGRES_VOLUME='pabip-gateway-postgres-data'
 ENV_FILE='pabip-gateway.env'
 ADMIN_PORT=8081
 
-log() { printf '\n\033[1;36m==>\033[0m %s\n' "$1"; }
-warn() { printf '\033[1;33m!!\033[0m %s\n' "$1" >&2; }
+# ---------- estilo ----------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  USE_COLOR=1
+  C_RESET=$'\033[0m'
+  C_DIM=$'\033[2m'
+  C_BOLD=$'\033[1m'
+  C_CYAN=$'\033[36m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_RED=$'\033[31m'
+  C_MAGENTA=$'\033[35m'
+else
+  USE_COLOR=0
+  C_RESET='' C_DIM='' C_BOLD='' C_CYAN='' C_GREEN='' C_YELLOW='' C_RED='' C_MAGENTA=''
+fi
+
+ICON_OK='✅'
+ICON_ERR='❌'
+ICON_WARN='⚠️'
+ICON_ARROW='❯'
+
+STEP_TOTAL=7
+STEP_CURRENT=0
+
+SPIN_LOG="$(mktemp)"
+cleanup() { rm -f "$SPIN_LOG"; }
+trap cleanup EXIT
+
+log() { printf '\n%s%s%s %s\n' "${C_CYAN}${C_BOLD}" "$ICON_ARROW" "$C_RESET" "$1"; }
+ok() { printf '%s%s%s %s\n' "$C_GREEN" "$ICON_OK" "$C_RESET" "$1"; }
+warn() { printf '%s%s%s %s\n' "$C_YELLOW" "$ICON_WARN" "$C_RESET" "$1" >&2; }
 die() {
-  printf '\033[1;31mx\033[0m %s\n' "$1" >&2
+  printf '%s%s%s %s\n' "$C_RED" "$ICON_ERR" "$C_RESET" "$1" >&2
   exit 1
+}
+
+# Repete um caractere (possivelmente multibyte, ex. box-drawing) N vezes —
+# `tr` corrompe caracteres UTF-8 de múltiplos bytes, por isso não usamos ele
+# aqui pra desenhar bordas.
+repeat_char() {
+  local ch="$1" count="$2" out='' i=0
+  while [ "$i" -lt "$count" ]; do
+    out+="$ch"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+banner() {
+  local title=' PABIP GATEWAY '
+  local border
+  border=$(repeat_char '═' "${#title}")
+  printf '\n%s╔%s╗%s\n' "$C_CYAN" "$border" "$C_RESET"
+  printf '%s║%s%s%s%s%s║%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD$C_MAGENTA" "$title" "$C_RESET" "$C_CYAN" "$C_RESET"
+  printf '%s╚%s╝%s\n' "$C_CYAN" "$border" "$C_RESET"
+  printf '🚀 %sinstalador de primeiro boot — protocolo PABIP%s\n' "$C_DIM" "$C_RESET"
+}
+
+# Cabeçalho de cada pergunta do wizard, numerado — dá pra saber quanto falta.
+step() {
+  STEP_CURRENT=$((STEP_CURRENT + 1))
+  printf '\n%s┄┄┄ Passo %d/%d ┄┄┄%s %s%s%s\n' "$C_DIM" "$STEP_CURRENT" "$STEP_TOTAL" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"
+}
+
+# Cabeçalho de seção fora do wizard (fase de aplicar, resumo final).
+section() {
+  printf '\n%s── %s ──%s\n' "${C_DIM}${C_BOLD}" "$1" "$C_RESET"
 }
 
 # Reads one line from the real terminal even when this script's own stdin is
 # curl's pipe (curl | bash) rather than an interactive shell.
 tty_read() {
-  local __var="$1" __prompt="$2" __default="${3:-}" __tty_read_value
+  local __var="$1" __label="$2" __default="${3:-}" __tty_read_value __prompt
   if [ -n "$__default" ]; then
-    __prompt="$__prompt [$__default]: "
+    __prompt="${C_GREEN}${C_BOLD}${ICON_ARROW}${C_RESET} ${__label} ${C_DIM}(${__default})${C_RESET}: "
   else
-    __prompt="$__prompt: "
+    __prompt="${C_GREEN}${C_BOLD}${ICON_ARROW}${C_RESET} ${__label}: "
   fi
   if [ -r /dev/tty ]; then
     read -r -p "$__prompt" __tty_read_value </dev/tty
@@ -58,7 +124,7 @@ tty_confirm() {
   local __prompt="$1" __default="${2:-n}" __reply=''
   local __hint='s/N'
   [ "$__default" = 's' ] && __hint='S/n'
-  tty_read __reply "$__prompt ($__hint)" "$__default"
+  tty_read __reply "$__prompt ${C_DIM}($__hint)${C_RESET}" "$__default"
   case "$__reply" in
   s | S | sim | y | Y | yes) return 0 ;;
   *) return 1 ;;
@@ -69,6 +135,81 @@ container_exists() {
   docker ps -a --format '{{.Names}}' | grep -Fxq "$1"
 }
 
+# Roda um comando em background com um spinner animado na frente da
+# mensagem; sem tty/cor, cai pra "mensagem... ok/falhou" sem animação.
+spin() {
+  local msg="$1"
+  shift
+  if [ "$USE_COLOR" -ne 1 ]; then
+    printf '%s ' "$msg"
+    if "$@" >"$SPIN_LOG" 2>&1; then
+      printf 'ok\n'
+      return 0
+    else
+      printf 'falhou\n'
+      cat "$SPIN_LOG" >&2
+      return 1
+    fi
+  fi
+
+  local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local n=${#frames[@]} i=0 rc=0
+
+  "$@" >"$SPIN_LOG" 2>&1 &
+  local pid=$!
+  printf '%s%s%s %s' "$C_CYAN" "${frames[0]}" "$C_RESET" "$msg"
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    i=$(((i + 1) % n))
+    printf '\r\033[K%s%s%s %s' "$C_CYAN" "${frames[$i]}" "$C_RESET" "$msg"
+  done
+  wait "$pid" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    printf '\r\033[K%s%s%s %s\n' "$C_GREEN" "$ICON_OK" "$C_RESET" "$msg"
+  else
+    printf '\r\033[K%s%s%s %s\n' "$C_RED" "$ICON_ERR" "$C_RESET" "$msg"
+    cat "$SPIN_LOG" >&2
+  fi
+  return "$rc"
+}
+
+# Igual ao spin(), mas pra polling: repete a checagem $fn até ela passar,
+# até $max tentativas, dormindo $interval segundos entre elas.
+spin_until() {
+  local msg="$1" fn="$2" max="$3" interval="${4:-2}" attempt=0
+
+  if [ "$USE_COLOR" -ne 1 ]; then
+    printf '%s ' "$msg"
+    while ! "$fn"; do
+      attempt=$((attempt + 1))
+      if [ "$attempt" -ge "$max" ]; then
+        printf 'falhou\n'
+        return 1
+      fi
+      sleep "$interval"
+    done
+    printf 'ok\n'
+    return 0
+  fi
+
+  local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local n=${#frames[@]} i=0
+  printf '%s%s%s %s' "$C_CYAN" "${frames[0]}" "$C_RESET" "$msg"
+  while ! "$fn"; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$max" ]; then
+      printf '\r\033[K%s%s%s %s\n' "$C_RED" "$ICON_ERR" "$C_RESET" "$msg"
+      return 1
+    fi
+    i=$(((i + 1) % n))
+    printf '\r\033[K%s%s%s %s' "$C_CYAN" "${frames[$i]}" "$C_RESET" "$msg"
+    sleep "$interval"
+  done
+  printf '\r\033[K%s%s%s %s\n' "$C_GREEN" "$ICON_OK" "$C_RESET" "$msg"
+  return 0
+}
+
 precheck() {
   command -v docker >/dev/null 2>&1 || die 'docker não encontrado no PATH. Instale o Docker Engine antes de continuar.'
   docker info >/dev/null 2>&1 || die 'não foi possível falar com o daemon do Docker — ele está rodando e acessível pro seu usuário?'
@@ -77,13 +218,17 @@ precheck() {
   if container_exists "$GATEWAY_CONTAINER"; then
     die "já existe um container '$GATEWAY_CONTAINER' — este script é só pra primeiro boot. Para operar uma instância existente, use 'docker exec $GATEWAY_CONTAINER pabip-gatewayctl ...'; pra recriar, remova o container antigo você mesmo primeiro."
   fi
+
+  ok '🐳 Docker e openssl disponíveis — pronto pra começar.'
 }
 
 gather_ente_publico() {
+  step '🏛️  Nome do Ente Público'
   tty_read_required GATEWAY_ENTE_PUBLICO_NAME 'Nome do Ente Público (identidade fixa desta instância, não muda fácil depois)'
 }
 
 gather_database() {
+  step '🗄️  Banco de dados'
   if tty_confirm 'Você já tem uma instância Postgres para usar?'; then
     tty_read_required DATABASE_URL 'Connection string completa (DATABASE_URL)'
     USE_LOCAL_POSTGRES=0
@@ -98,6 +243,7 @@ gather_database() {
 }
 
 gather_network() {
+  step '🌐 Rede'
   GATEWAY_PUBLIC_PORT=8080
   tty_read GATEWAY_PUBLIC_PORT 'Porta pública (webhook + /peers/*)' "$GATEWAY_PUBLIC_PORT"
   case "$GATEWAY_PUBLIC_PORT" in
@@ -114,11 +260,12 @@ gather_network() {
 }
 
 gather_output() {
-  echo 'Para onde o gateway entrega os eventos recebidos?'
-  echo '  1) callback — webhook HTTP (padrão)'
-  echo '  2) queue    — RabbitMQ/Kafka/SQS/Redis Streams'
-  echo '  3) db       — grava direto numa tabela de destino'
-  echo '  4) decidir depois (toda entrega fica rejeitada até configurar)'
+  step '📬 Entrega dos eventos'
+  printf '%sPara onde o gateway entrega os eventos recebidos?%s\n' "$C_BOLD" "$C_RESET"
+  printf '  %s1)%s 🔗 callback — webhook HTTP %s(padrão)%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s2)%s 📨 queue    — RabbitMQ/Kafka/SQS/Redis Streams\n' "$C_CYAN" "$C_RESET"
+  printf '  %s3)%s 🗃️  db       — grava direto numa tabela de destino\n' "$C_CYAN" "$C_RESET"
+  printf '  %s4)%s ⏭️  decidir depois %s(toda entrega fica rejeitada até configurar)%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
   OUTPUT_CALLBACK_HEADERS=''
   OUTPUT_QUEUE_ROUTING_KEY_TEMPLATE=''
   local choice=''
@@ -156,6 +303,7 @@ gather_output() {
 }
 
 gather_audit() {
+  step '📝 Auditoria'
   AUDIT_SINK='stdout'
   if tty_confirm 'Gravar a trilha de auditoria também no Postgres desta instância (além do stdout)?'; then
     AUDIT_SINK='db'
@@ -167,6 +315,7 @@ gather_audit() {
 }
 
 gather_logging() {
+  step '📋 Log'
   LOG_LEVEL='info'
   tty_read LOG_LEVEL 'Nível de log (trace/debug/info/warn/error/fatal/silent)' "$LOG_LEVEL"
   case "$LOG_LEVEL" in
@@ -176,6 +325,7 @@ gather_logging() {
 }
 
 gather_image_tag() {
+  step '🏷️  Imagem'
   tty_read GATEWAY_IMAGE_TAG 'Tag da imagem' 'latest'
 }
 
@@ -205,12 +355,16 @@ write_env_file() {
     printf 'LOG_LEVEL=%s\n' "$LOG_LEVEL"
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
+  ok "🧾 Configuração gravada em $ENV_FILE"
+}
+
+pg_ready() {
+  docker exec "$POSTGRES_CONTAINER" pg_isready -U gateway -d gateway >/dev/null 2>&1
 }
 
 start_local_postgres() {
   [ "$USE_LOCAL_POSTGRES" -eq 1 ] || return 0
-  log "Subindo Postgres local ($POSTGRES_CONTAINER)…"
-  docker run -d \
+  spin "🐘 Subindo Postgres local…" docker run -d \
     --name "$POSTGRES_CONTAINER" \
     -p 5432:5432 \
     -e POSTGRES_USER=gateway \
@@ -218,93 +372,94 @@ start_local_postgres() {
     -e POSTGRES_DB=gateway \
     -v "${POSTGRES_VOLUME}:/var/lib/postgresql/data" \
     --restart unless-stopped \
-    postgres:16-alpine >/dev/null
+    postgres:16-alpine || die 'não foi possível subir o Postgres local — veja o log acima.'
 
-  log 'Aguardando o Postgres aceitar conexões…'
-  local attempt=0
-  until docker exec "$POSTGRES_CONTAINER" pg_isready -U gateway -d gateway >/dev/null 2>&1; do
-    attempt=$((attempt + 1))
-    [ "$attempt" -ge 15 ] && die "Postgres não ficou pronto a tempo — veja 'docker logs $POSTGRES_CONTAINER'."
-    sleep 2
-  done
+  spin_until '⏳ Aguardando o Postgres aceitar conexões…' pg_ready 15 2 \
+    || die "Postgres não ficou pronto a tempo — veja 'docker logs $POSTGRES_CONTAINER'."
 }
 
 pull_image() {
-  log "Baixando ${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}…"
-  docker pull "${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}"
+  spin "📦 Baixando a imagem…" docker pull "${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}" \
+    || die 'falha ao baixar a imagem — veja o log acima.'
 }
 
 run_migration() {
-  log 'Aplicando o schema no banco (migrate-only)…'
-  docker run --rm \
+  spin '🗄️  Rodando migrações…' docker run --rm \
     --env-file "$ENV_FILE" \
     --add-host=host.docker.internal:host-gateway \
     "${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}" \
-    migrate-only
+    migrate-only \
+    || die 'falha ao migrar o banco — veja o log acima.'
 }
 
 start_gateway() {
-  log "Subindo o gateway ($GATEWAY_CONTAINER)…"
   # A porta admin (8081) nunca é publicada pro host — de propósito, é assim
   # que a autenticação administrativa foi desenhada pra funcionar com
   # segurança (ver `docker exec` nos passos abaixo pra alcançá-la).
-  docker run -d \
+  spin "🚀 Subindo o gateway…" docker run -d \
     --name "$GATEWAY_CONTAINER" \
     --env-file "$ENV_FILE" \
     --add-host=host.docker.internal:host-gateway \
     -p "${GATEWAY_PUBLIC_PORT}:${GATEWAY_PUBLIC_PORT}" \
     --restart unless-stopped \
-    "${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}" >/dev/null
+    "${IMAGE_REPO}:${GATEWAY_IMAGE_TAG}" \
+    || die 'falha ao subir o container do gateway — veja o log acima.'
+}
+
+gateway_healthy() {
+  docker exec "$GATEWAY_CONTAINER" pabip-gatewayctl \
+    --admin-url "http://127.0.0.1:${ADMIN_PORT}" \
+    health check >/dev/null 2>&1
 }
 
 wait_for_health() {
-  log 'Verificando healthz/readyz…'
-  local attempt=0
-  until docker exec "$GATEWAY_CONTAINER" pabip-gatewayctl \
-    --admin-url "http://127.0.0.1:${ADMIN_PORT}" \
-    health check >/dev/null 2>&1; do
-    attempt=$((attempt + 1))
-    if [ "$attempt" -ge 15 ]; then
-      warn 'a instância não respondeu saudável a tempo. Últimas linhas de log:'
-      docker logs --tail 50 "$GATEWAY_CONTAINER" >&2 || true
-      die 'health check falhou — investigue o log acima antes de considerar a instância no ar.'
-    fi
-    sleep 2
-  done
+  if ! spin_until '🩺 Verificando saúde da instância…' gateway_healthy 15 2; then
+    warn 'a instância não respondeu saudável a tempo. Últimas linhas de log:'
+    docker logs --tail 50 "$GATEWAY_CONTAINER" >&2 || true
+    die 'health check falhou — investigue o log acima antes de considerar a instância no ar.'
+  fi
 }
 
 print_summary() {
-  log 'Instância no ar.'
-  cat <<EOF
+  printf '\n%s%s Instância no ar.%s\n' "$C_GREEN$C_BOLD" "$ICON_OK" "$C_RESET"
 
-Admin token (única vez que aparece — guarde no gerenciador de segredos AGORA):
-  $ADMIN_TOKEN
+  local token_line="  ${ADMIN_TOKEN}  "
+  local border
+  border=$(repeat_char '─' "${#token_line}")
+  printf '\n🔑 %sAdmin token — única vez que aparece, guarde no gerenciador de segredos AGORA:%s\n' "$C_YELLOW$C_BOLD" "$C_RESET"
+  printf '%s┌%s┐%s\n' "$C_YELLOW" "$border" "$C_RESET"
+  printf '%s│%s%s%s%s│%s\n' "$C_YELLOW" "$C_RESET$C_BOLD" "$token_line" "$C_RESET" "$C_YELLOW" "$C_RESET"
+  printf '%s└%s┘%s\n' "$C_YELLOW" "$border" "$C_RESET"
 
-Arquivo de config gerado: $ENV_FILE
-Container do gateway:     $GATEWAY_CONTAINER (porta $GATEWAY_PUBLIC_PORT publicada; $ADMIN_PORT fica só interna, de propósito)
+  section '🗂️  Arquivos e containers'
+  printf '  Config:   %s\n' "$ENV_FILE"
+  printf '  Gateway:  %s %s(porta pública %s; admin %s só interna, de propósito)%s\n' \
+    "$GATEWAY_CONTAINER" "$C_DIM" "$GATEWAY_PUBLIC_PORT" "$ADMIN_PORT" "$C_RESET"
 
-O admin-api (porta $ADMIN_PORT) só é alcançável de dentro do container —
-todo comando abaixo passa por 'docker exec'. Substitua \$TOKEN pelo token
-acima.
+  printf '\n%sO admin-api (porta %s) só é alcançável de dentro do container — todo comando abaixo passa por %sdocker exec%s. Substitua %s$TOKEN%s pelo token acima.%s\n' \
+    "$C_DIM" "$ADMIN_PORT" "$C_BOLD" "$C_RESET$C_DIM" "$C_BOLD" "$C_RESET$C_DIM" "$C_RESET"
 
-Próximos passos:
-  1. Cadastrar o primeiro Ente Privado:
-     docker exec $GATEWAY_CONTAINER pabip-gatewayctl --token "\$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write
-  2. Emitir um client token, se houver frontend consumindo /peers/*:
-     docker exec $GATEWAY_CONTAINER pabip-gatewayctl --token "\$TOKEN" client-tokens issue --label ...
-  3. Apontar seu coletor de logs pro stdout do container.
-  4. Configurar backup do Postgres que esta instância usa.
-  5. Ligar métricas (GET /metrics, porta admin, via docker exec ou um túnel) a um painel/alerta.
-  6. Ver a configuração completa (o que foi gerado + o que ainda está no
-     valor padrão) e ajustar o que quiser sem reiniciar:
-     docker exec $GATEWAY_CONTAINER pabip-gatewayctl --token "\$TOKEN" config get
-  7. Agendar a primeira rotação do admin token.
+  section '👉 Próximos passos'
+  local -a steps=(
+    'Cadastrar o primeiro Ente Privado:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+    'Emitir um client token, se houver frontend consumindo /peers/*:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" client-tokens issue --label ...'
+    'Apontar seu coletor de logs pro stdout do container.'
+    'Configurar backup do Postgres que esta instância usa.'
+    'Ligar métricas (GET /metrics, porta admin, via docker exec ou um túnel) a um painel/alerta.'
+    'Ver a configuração completa (o que foi gerado + o que ainda está no valor padrão) e ajustar o que quiser sem reiniciar:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" config get'
+    'Agendar a primeira rotação do admin token.'
+  )
+  local n=1 s
+  for s in "${steps[@]}"; do
+    printf "  %s%d.%s %b\n" "$C_CYAN$C_BOLD" "$n" "$C_RESET" "$s"
+    n=$((n + 1))
+  done
 
-Cada comando aceita --help pra ver todas as opções.
-EOF
+  printf '\n%sCada comando aceita --help pra ver todas as opções.%s\n' "$C_DIM" "$C_RESET"
 }
 
 main() {
+  banner
   precheck
   gather_ente_publico
   gather_database
@@ -314,6 +469,7 @@ main() {
   gather_logging
   gather_image_tag
   write_env_file
+  section '⚙️  Aplicando'
   start_local_postgres
   pull_image
   run_migration
