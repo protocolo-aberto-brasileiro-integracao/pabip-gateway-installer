@@ -30,19 +30,19 @@ die() {
 # Reads one line from the real terminal even when this script's own stdin is
 # curl's pipe (curl | bash) rather than an interactive shell.
 tty_read() {
-  local __var="$1" __prompt="$2" __default="${3:-}" __reply
+  local __var="$1" __prompt="$2" __default="${3:-}" __tty_read_value
   if [ -n "$__default" ]; then
     __prompt="$__prompt [$__default]: "
   else
     __prompt="$__prompt: "
   fi
   if [ -r /dev/tty ]; then
-    read -r -p "$__prompt" __reply </dev/tty
+    read -r -p "$__prompt" __tty_read_value </dev/tty
   else
-    read -r -p "$__prompt" __reply
+    read -r -p "$__prompt" __tty_read_value
   fi
-  [ -z "$__reply" ] && __reply="$__default"
-  printf -v "$__var" '%s' "$__reply"
+  [ -z "$__tty_read_value" ] && __tty_read_value="$__default"
+  printf -v "$__var" '%s' "$__tty_read_value"
 }
 
 tty_read_required() {
