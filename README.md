@@ -2,7 +2,7 @@
 
 Um script só, pra subir uma instância nova do pabip-gateway sem precisar clonar repositório, instalar dependência nenhuma além de Docker e responder umas perguntas no terminal.
 
-O pabip-gateway é a implementação de referência do protocolo PABIP — a ponte self-hosted entre quem produz eventos de analítico de imagem (Ente Privado, câmeras/sensores) e quem consome (sistema do Ente Público, via callback, fila ou banco). A previsão é publicar o código dele também nesta organização em breve; até lá, este repo cobre só o instalador.
+O [pabip-gateway](https://github.com/protocolo-aberto-brasileiro-integracao/pabip-gateway) é a implementação de referência do protocolo PABIP — a ponte self-hosted entre quem produz eventos de analítico de imagem (Ente Privado, câmeras/sensores) e quem consome (sistema do Ente Público, via callback, fila ou banco). Este repositório cobre só o instalador; o código do gateway em si vive no repositório linkado acima.
 
 ## Pra quem é isso
 
@@ -28,12 +28,17 @@ bash bootstrap.sh
 
 1. Nome do Ente Público — isso fica fixo na instância, não é algo pra trocar depois sem dor.
 2. Se você já tem um Postgres pra usar (aí pede a connection string) ou se quer que ele suba um Postgres local via Docker — útil quando quem está instalando não tem esse banco provisionado ainda.
-3. Para onde os eventos recebidos devem ser entregues: um callback HTTP, uma fila (RabbitMQ/Kafka/SQS/Redis Streams) ou grava direto num banco de destino. Dá pra pular essa parte e configurar depois, mas até lá toda entrega vai ser rejeitada — o script avisa isso na hora.
-4. Qual tag da imagem usar (por padrão, a mais recente publicada).
+3. Porta pública (padrão `8080`) e se existe mais de um reverse proxy na frente do gateway — se sim, pede a lista de CIDR/IP confiáveis (`GATEWAY_TRUSTED_PROXY_CIDRS`). Deixar em branco mantém o trust de 1 hop, que é o padrão certo pra topologia de reverse-proxy único.
+4. Para onde os eventos recebidos devem ser entregues: um callback HTTP (com a opção de mandar headers extras, ex. um segredo compartilhado), uma fila — RabbitMQ/Kafka/SQS/Redis Streams — (com a opção de customizar o routing key template) ou grava direto num banco de destino. Dá pra pular essa parte e configurar depois, mas até lá toda entrega vai ser rejeitada — o script avisa isso na hora.
+5. Se a trilha de auditoria também deve ser gravada no Postgres desta instância (além do stdout, que é o padrão e já basta se o seu coletor de log retém por pelo menos 180 dias).
+6. Nível de log (`info` por padrão).
+7. Qual tag da imagem usar (por padrão, a mais recente publicada).
 
-A partir daí ele gera o arquivo de configuração, cria o admin token, baixa a imagem, roda a migração do banco, sobe o container do gateway e confere se ele respondeu saudável antes de considerar terminado. No final, imprime o admin token (guarde num gerenciador de segredos assim que aparecer — é a única vez que ele é mostrado) e uma lista do que fazer a seguir: cadastrar o primeiro parceiro, emitir token de cliente se algum frontend for consumir a API, apontar coleta de log, configurar backup do banco.
+A partir daí ele gera o arquivo de configuração, cria o admin token, baixa a imagem, roda a migração do banco, sobe o container do gateway e confere se ele respondeu saudável antes de considerar terminado. No final, imprime o admin token (guarde num gerenciador de segredos assim que aparecer — é a única vez que ele é mostrado) e uma lista do que fazer a seguir: cadastrar o primeiro parceiro, emitir token de cliente se algum frontend for consumir a API, apontar coleta de log, configurar backup do banco — todos via `docker exec` no próprio container, já que a porta administrativa não é alcançável de fora dele.
 
-Só a porta pública (8080) fica exposta ao final. A porta administrativa nunca é publicada — de propósito, é assim que a autenticação administrativa foi desenhada pra funcionar com segurança.
+Qualquer outra configuração do gateway que o script não pergunta (limites de retry, circuit breaker, concorrência de entrega, etc.) já sobe com um valor padrão razoável e pode ser ajustada depois, sem reiniciar a instância, via `pabip-gatewayctl config get`/`config set`.
+
+Só a porta pública fica exposta ao final. A porta administrativa nunca é publicada — de propósito, é assim que a autenticação administrativa foi desenhada pra funcionar com segurança.
 
 ## O que fica de fora, de propósito
 
