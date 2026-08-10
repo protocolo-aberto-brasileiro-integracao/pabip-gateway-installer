@@ -111,10 +111,16 @@ tty_read() {
     __prompt="${C_GREEN}${C_BOLD}${ICON_ARROW}${C_RESET} ${__label}: "
   fi
   if [ -r /dev/tty ]; then
-    read -r -p "$__prompt" __tty_read_value </dev/tty
+    # -e liga o readline: sem isso, setas/Home/End digitadas na hora do
+    # prompt entram como bytes crus (ex.: ESC[A) em vez de editar a linha.
+    read -e -r -p "$__prompt" __tty_read_value </dev/tty
   else
     read -r -p "$__prompt" __tty_read_value
   fi
+  # remove espaço/CR de borda — paste em alguns terminais deixa um \r residual
+  # (já visto quebrando validação de URL) já que `read -r` só corta o \n final.
+  __tty_read_value="${__tty_read_value#"${__tty_read_value%%[![:space:]]*}"}"
+  __tty_read_value="${__tty_read_value%"${__tty_read_value##*[![:space:]]}"}"
   [ -z "$__tty_read_value" ] && __tty_read_value="$__default"
   printf -v "$__var" '%s' "$__tty_read_value"
 }
