@@ -73,13 +73,21 @@ repeat_char() {
 }
 
 banner() {
-  local title=' PABIP GATEWAY '
-  local border
-  border=$(repeat_char '═' "${#title}")
-  printf '\n%s╔%s╗%s\n' "$C_CYAN" "$border" "$C_RESET"
-  printf '%s║%s%s%s%s%s║%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD$C_MAGENTA" "$title" "$C_RESET" "$C_CYAN" "$C_RESET"
-  printf '%s╚%s╝%s\n' "$C_CYAN" "$border" "$C_RESET"
-  printf '🚀 %sinstalador de primeiro boot — protocolo PABIP%s\n' "$C_DIM" "$C_RESET"
+  local -a art=(
+    ' _____        ____ _____ _____  '
+    '|  __ \ /\   |  _ \_   _|  __ \ '
+    '| |__) /  \  | |_) || | | |__) |'
+    '|  ___/ /\ \ |  _ < | | |  ___/ '
+    '| |  / ____ \| |_) || |_| |     '
+    '|_| /_/    \_\____/_____|_|     '
+  )
+  local line
+  printf '\n'
+  for line in "${art[@]}"; do
+    printf '%s%s%s\n' "$C_MAGENTA$C_BOLD" "$line" "$C_RESET"
+  done
+  printf '%s        G A T E W A Y%s\n' "$C_CYAN$C_BOLD" "$C_RESET"
+  printf '\n🚀 %sinstalador de primeiro boot — protocolo PABIP%s\n' "$C_DIM" "$C_RESET"
 }
 
 # Cabeçalho de cada pergunta do wizard, numerado — dá pra saber quanto falta.
