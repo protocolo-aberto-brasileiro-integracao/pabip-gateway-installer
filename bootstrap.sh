@@ -420,6 +420,87 @@ wait_for_health() {
   fi
 }
 
+gather_first_peer() {
+  tty_read_required PEER_NAME 'Nome do Ente Privado'
+  tty_read_required PEER_BASE_URL "URL base do Ente Privado (a URL dele, não a do admin-api)"
+  tty_read_required PEER_THEIR_API_KEY 'API key que o Ente Privado te passou por fora de banda'
+
+  printf '%sQuais escopos esse peer vai usar?%s\n' "$C_BOLD" "$C_RESET"
+  printf '  %s1)%s 🚗 plate:write %s(padrão)%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s2)%s 👤 face:write\n' "$C_CYAN" "$C_RESET"
+  printf '  %s3)%s 🚗👤 plate:write e face:write\n' "$C_CYAN" "$C_RESET"
+  local choice=''
+  while true; do
+    tty_read choice 'Escolha' '1'
+    case "$choice" in
+    1) PEER_SCOPE_ARGS=(plate:write) && break ;;
+    2) PEER_SCOPE_ARGS=(face:write) && break ;;
+    3) PEER_SCOPE_ARGS=(plate:write face:write) && break ;;
+    *) warn 'escolha inválida.' ;;
+    esac
+  done
+
+  PEER_IP_ALLOWLIST_ARGS=()
+  if tty_confirm 'Restringir esse peer a IPs/CIDRs específicos?'; then
+    local raw=''
+    tty_read_required raw 'IPs/CIDRs separados por vírgula'
+    IFS=', ' read -ra PEER_IP_ALLOWLIST_ARGS <<<"$raw"
+  fi
+}
+
+create_first_peer() {
+  local -a cmd=(
+    docker exec "$GATEWAY_CONTAINER" pabip-gatewayctl --token "$ADMIN_TOKEN" peers create
+    --name "$PEER_NAME" --base-url "$PEER_BASE_URL" --their-api-key "$PEER_THEIR_API_KEY"
+    --scope "${PEER_SCOPE_ARGS[@]}"
+  )
+  [ "${#PEER_IP_ALLOWLIST_ARGS[@]}" -gt 0 ] && cmd+=(--ip-allowlist "${PEER_IP_ALLOWLIST_ARGS[@]}")
+
+  # peers create chama de volta o /sensor-nodes do próprio peer pra validar a
+  # theirApiKey antes de confirmar o cadastro — pode levar alguns segundos.
+  if ! spin "📇 Cadastrando \"$PEER_NAME\" (valida o manifesto dele antes de confirmar)…" "${cmd[@]}"; then
+    return 1
+  fi
+
+  PEER_ISSUED_API_KEY="$(sed -n 's/^ *"issuedApiKey": *"\(.*\)"$/\1/p' "$SPIN_LOG")"
+  if [ -z "$PEER_ISSUED_API_KEY" ]; then
+    warn 'peer cadastrado, mas não consegui extrair a API key emitida da resposta — confira manualmente:'
+    cat "$SPIN_LOG"
+  fi
+}
+
+print_peer_key_box() {
+  [ -n "$PEER_ISSUED_API_KEY" ] || return 0
+  local key_line="  ${PEER_ISSUED_API_KEY}  "
+  local border
+  border=$(repeat_char '─' "${#key_line}")
+  printf '\n🔑 %sAPI key emitida pro peer "%s" — única vez que aparece, guarde no gerenciador de segredos AGORA:%s\n' \
+    "$C_YELLOW$C_BOLD" "$PEER_NAME" "$C_RESET"
+  printf '%s┌%s┐%s\n' "$C_YELLOW" "$border" "$C_RESET"
+  printf '%s│%s%s%s%s│%s\n' "$C_YELLOW" "$C_RESET$C_BOLD" "$key_line" "$C_RESET" "$C_YELLOW" "$C_RESET"
+  printf '%s└%s┘%s\n' "$C_YELLOW" "$border" "$C_RESET"
+}
+
+offer_first_peer() {
+  PEER_CREATED=0
+  section '🤝 Primeiro peer'
+  tty_confirm 'Quer cadastrar o primeiro Ente Privado (peer) agora?' 's' || return 0
+
+  while true; do
+    gather_first_peer
+    if create_first_peer; then
+      PEER_CREATED=1
+      ok "Peer \"$PEER_NAME\" cadastrado."
+      print_peer_key_box
+      break
+    fi
+    tty_confirm 'Tentar de novo com outros dados?' 's' || {
+      warn 'seguindo sem cadastrar o peer agora — dá pra fazer isso depois (ver "Próximos passos" no resumo).'
+      break
+    }
+  done
+}
+
 print_summary() {
   printf '\n%s%s Instância no ar.%s\n' "$C_GREEN$C_BOLD" "$ICON_OK" "$C_RESET"
 
@@ -440,8 +521,14 @@ print_summary() {
     "$C_DIM" "$ADMIN_PORT" "$C_BOLD" "$C_RESET$C_DIM" "$C_BOLD" "$C_RESET$C_DIM" "$C_RESET"
 
   section '👉 Próximos passos'
+  local peer_step
+  if [ "$PEER_CREATED" -eq 1 ]; then
+    peer_step='Ente Privado "'"$PEER_NAME"'" já cadastrado ✅. Pra adicionar outro:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+  else
+    peer_step='Cadastrar o primeiro Ente Privado:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+  fi
   local -a steps=(
-    'Cadastrar o primeiro Ente Privado:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+    "$peer_step"
     'Emitir um client token, se houver frontend consumindo /peers/*:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" client-tokens issue --label ...'
     'Apontar seu coletor de logs pro stdout do container.'
     'Configurar backup do Postgres que esta instância usa.'
@@ -475,6 +562,7 @@ main() {
   run_migration
   start_gateway
   wait_for_health
+  offer_first_peer
   print_summary
 }
 
