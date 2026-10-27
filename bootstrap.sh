@@ -346,28 +346,31 @@ gather_image_tag() {
 write_env_file() {
   ADMIN_TOKEN="$(openssl rand -hex 32)"
 
-  {
-    printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
-    printf 'GATEWAY_ENTE_PUBLICO_NAME=%s\n' "$GATEWAY_ENTE_PUBLICO_NAME"
-    printf 'GATEWAY_ADMIN_TOKENS=%s\n' "$ADMIN_TOKEN"
-    printf 'GATEWAY_PUBLIC_PORT=%s\n' "$GATEWAY_PUBLIC_PORT"
-    [ -n "$GATEWAY_TRUSTED_PROXY_CIDRS" ] && printf 'GATEWAY_TRUSTED_PROXY_CIDRS=%s\n' "$GATEWAY_TRUSTED_PROXY_CIDRS"
-    printf 'OUTPUT_TYPE=%s\n' "$OUTPUT_TYPE"
-    case "$OUTPUT_TYPE" in
-    callback)
-      printf 'OUTPUT_CALLBACK_URL=%s\n' "$OUTPUT_CALLBACK_URL"
-      [ -n "$OUTPUT_CALLBACK_HEADERS" ] && printf 'OUTPUT_CALLBACK_HEADERS=%s\n' "$OUTPUT_CALLBACK_HEADERS"
-      ;;
-    queue)
-      printf 'OUTPUT_QUEUE_BROKER_URL=%s\n' "$OUTPUT_QUEUE_BROKER_URL"
-      printf 'OUTPUT_QUEUE_ROUTING_KEY_TEMPLATE=%s\n' "$OUTPUT_QUEUE_ROUTING_KEY_TEMPLATE"
-      ;;
-    db) printf 'OUTPUT_DB_CONNECTION_STRING=%s\n' "$OUTPUT_DB_CONNECTION_STRING" ;;
-    esac
-    printf 'AUDIT_SINK=%s\n' "$AUDIT_SINK"
-    printf 'NODE_ENV=production\n'
-    printf 'LOG_LEVEL=%s\n' "$LOG_LEVEL"
-  } >"$ENV_FILE"
+  (
+    umask 077
+    {
+      printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
+      printf 'GATEWAY_ENTE_PUBLICO_NAME=%s\n' "$GATEWAY_ENTE_PUBLICO_NAME"
+      printf 'GATEWAY_ADMIN_TOKENS=%s\n' "$ADMIN_TOKEN"
+      printf 'GATEWAY_PUBLIC_PORT=%s\n' "$GATEWAY_PUBLIC_PORT"
+      [ -n "$GATEWAY_TRUSTED_PROXY_CIDRS" ] && printf 'GATEWAY_TRUSTED_PROXY_CIDRS=%s\n' "$GATEWAY_TRUSTED_PROXY_CIDRS"
+      printf 'OUTPUT_TYPE=%s\n' "$OUTPUT_TYPE"
+      case "$OUTPUT_TYPE" in
+      callback)
+        printf 'OUTPUT_CALLBACK_URL=%s\n' "$OUTPUT_CALLBACK_URL"
+        [ -n "$OUTPUT_CALLBACK_HEADERS" ] && printf 'OUTPUT_CALLBACK_HEADERS=%s\n' "$OUTPUT_CALLBACK_HEADERS"
+        ;;
+      queue)
+        printf 'OUTPUT_QUEUE_BROKER_URL=%s\n' "$OUTPUT_QUEUE_BROKER_URL"
+        printf 'OUTPUT_QUEUE_ROUTING_KEY_TEMPLATE=%s\n' "$OUTPUT_QUEUE_ROUTING_KEY_TEMPLATE"
+        ;;
+      db) printf 'OUTPUT_DB_CONNECTION_STRING=%s\n' "$OUTPUT_DB_CONNECTION_STRING" ;;
+      esac
+      printf 'AUDIT_SINK=%s\n' "$AUDIT_SINK"
+      printf 'NODE_ENV=production\n'
+      printf 'LOG_LEVEL=%s\n' "$LOG_LEVEL"
+    } >"$ENV_FILE"
+  )
   chmod 600 "$ENV_FILE"
   ok "🧾 Configuração gravada em $ENV_FILE"
 }
