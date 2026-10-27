@@ -389,7 +389,7 @@ start_local_postgres() {
     -e POSTGRES_DB=gateway \
     -v "${POSTGRES_VOLUME}:/var/lib/postgresql/data" \
     --restart unless-stopped \
-    postgres:16-alpine || die 'não foi possível subir o Postgres local — veja o log acima.'
+    postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab || die 'não foi possível subir o Postgres local — veja o log acima.'
 
   spin_until '⏳ Aguardando o Postgres aceitar conexões…' pg_ready 15 2 \
     || die "Postgres não ficou pronto a tempo — veja 'docker logs $POSTGRES_CONTAINER'."
@@ -466,8 +466,9 @@ gather_first_peer() {
 }
 
 create_first_peer() {
+  export GATEWAY_ADMIN_TOKEN="$ADMIN_TOKEN"
   local -a cmd=(
-    docker exec "$GATEWAY_CONTAINER" pabip-gatewayctl --token "$ADMIN_TOKEN" peers create
+    docker exec -e GATEWAY_ADMIN_TOKEN "$GATEWAY_CONTAINER" pabip-gatewayctl peers create
     --name "$PEER_NAME" --base-url "$PEER_BASE_URL" --their-api-key "$PEER_THEIR_API_KEY"
     --scope "${PEER_SCOPE_ARGS[@]}"
   )
@@ -534,23 +535,23 @@ print_summary() {
   printf '  Gateway:  %s %s(porta pública %s; admin %s só interna, de propósito)%s\n' \
     "$GATEWAY_CONTAINER" "$C_DIM" "$GATEWAY_PUBLIC_PORT" "$ADMIN_PORT" "$C_RESET"
 
-  printf '\n%sO admin-api (porta %s) só é alcançável de dentro do container — todo comando abaixo passa por %sdocker exec%s. Substitua %s$TOKEN%s pelo token acima.%s\n' \
+  printf '\n%sO admin-api (porta %s) só é alcançável de dentro do container — todo comando abaixo passa por %sdocker exec%s. Exporte %sGATEWAY_ADMIN_TOKEN%s com o token acima antes de rodar os comandos (assim o valor não aparece em argv/ps aux).%s\n' \
     "$C_DIM" "$ADMIN_PORT" "$C_BOLD" "$C_RESET$C_DIM" "$C_BOLD" "$C_RESET$C_DIM" "$C_RESET"
 
   section '👉 Próximos passos'
   local peer_step
   if [ "$PEER_CREATED" -eq 1 ]; then
-    peer_step='Ente Privado "'"$PEER_NAME"'" já cadastrado ✅. Pra adicionar outro:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+    peer_step='Ente Privado "'"$PEER_NAME"'" já cadastrado ✅. Pra adicionar outro:\n     docker exec -e GATEWAY_ADMIN_TOKEN '"$GATEWAY_CONTAINER"' pabip-gatewayctl peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
   else
-    peer_step='Cadastrar o primeiro Ente Privado:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
+    peer_step='Cadastrar o primeiro Ente Privado:\n     docker exec -e GATEWAY_ADMIN_TOKEN '"$GATEWAY_CONTAINER"' pabip-gatewayctl peers create --name ... --base-url ... --their-api-key ... --scope plate:write'
   fi
   local -a steps=(
     "$peer_step"
-    'Emitir um client token, se houver frontend consumindo /peers/*:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" client-tokens issue --label ...'
+    'Emitir um client token, se houver frontend consumindo /peers/*:\n     docker exec -e GATEWAY_ADMIN_TOKEN '"$GATEWAY_CONTAINER"' pabip-gatewayctl client-tokens issue --label ...'
     'Apontar seu coletor de logs pro stdout do container.'
     'Configurar backup do Postgres que esta instância usa.'
     'Ligar métricas (GET /metrics, porta admin, via docker exec ou um túnel) a um painel/alerta.'
-    'Ver a configuração completa (o que foi gerado + o que ainda está no valor padrão) e ajustar o que quiser sem reiniciar:\n     docker exec '"$GATEWAY_CONTAINER"' pabip-gatewayctl --token "$TOKEN" config get'
+    'Ver a configuração completa (o que foi gerado + o que ainda está no valor padrão) e ajustar o que quiser sem reiniciar:\n     docker exec -e GATEWAY_ADMIN_TOKEN '"$GATEWAY_CONTAINER"' pabip-gatewayctl config get'
     'Agendar a primeira rotação do admin token.'
   )
   local n=1 s
