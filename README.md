@@ -40,6 +40,26 @@ Qualquer outra configuração do gateway que o script não pergunta (limites de 
 
 Só a porta pública fica exposta ao final. A porta administrativa nunca é publicada — de propósito, é assim que a autenticação administrativa foi desenhada pra funcionar com segurança.
 
+## Rastreabilidade e allowlist — o que o reverse proxy não pode mexer
+
+O protocolo PABIP trafega três headers de rastreabilidade de ponta a ponta. O gateway já lida com eles sozinho; o que você precisa garantir é que, ao colocar um reverse proxy na frente (o segundo passo descrito abaixo), ele **repasse esses headers para o upstream sem stripar**:
+
+- `X-Request-Id` — correlaciona uma requisição ao longo de toda a cadeia. O gateway aceita o valor que vier de fora (ou gera um se faltar) e **ecoa `X-Request-Id` em toda resposta**, inclusive nas de erro. É assim que o cliente casa log e resposta.
+- `X-Actor-Id` — identifica o operador humano por trás da requisição.
+- `X-Case-Ref` — referência do caso/ocorrência que justifica o acesso.
+
+A maioria dos reverse proxies repassa headers desconhecidos por padrão, mas alguns só deixam passar uma allowlist fixa — nesse caso, inclua os três acima explicitamente. Pontos de atenção:
+
+- **nginx**: headers com hífen passam por padrão; não adicione um `proxy_set_header X-Request-Id "";` que os apague. Se você gera o request id no próprio nginx, use `proxy_set_header X-Request-Id $http_x_request_id;` para preservar o valor que o cliente mandou.
+- **traefik**: não configure um middleware `headers` que remova esses campos — sem isso, eles passam por padrão.
+- **caddy**: `reverse_proxy` repassa todos os headers por padrão; nada a fazer.
+
+### allowlist de IP na abertura de sessão de vídeo
+
+A abertura de sessão de vídeo aceita, no corpo, o campo `allowlist` (`allowlist: string[]`) — uma lista de IPs ou CIDRs (v4/v6, incluindo IPv4-mapped IPv6) autorizados a reproduzir aquela sessão. O reverse proxy **não pode dropar o corpo nem esse campo** ao repassar a requisição.
+
+O enforcement casa cada entrada da `allowlist` contra o IP real do cliente. Quando há proxy adicional na frente, esse IP real só é confiável se `GATEWAY_TRUSTED_PROXY_CIDRS` (perguntado no passo de Rede) apontar para os proxies certos — senão o gateway enxerga o IP do proxy, não o do cliente, e a allowlist casa errado.
+
 ## O que fica de fora, de propósito
 
 TLS, reverse proxy e múltiplas réplicas não fazem parte deste script — isso é um segundo passo, depois que a primeira instância já está de pé e você decidiu como vai expor a porta pública pra internet de verdade. Rodar de novo contra um container que já existe também não é o objetivo: o script se recusa a continuar se já achar uma instância no ar com o mesmo nome, em vez de arriscar sobrescrever alguma coisa.
